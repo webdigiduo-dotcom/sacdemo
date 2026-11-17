@@ -3,7 +3,7 @@
 
    0  Scroll-driven sections, word-by-word statements, count-up numbers
    1  YouTube helpers (official embed, controlled by postMessage)
-   2  Hero video: muted, looping, behind no text
+   2  Hero slider: four photos, cross-fading with a slow zoom
    3  Reel player: auto-sliding, muted, with prev / next / play / sound
    4  Reviews: live Google + Tripadvisor reviews, filtered to the best ones
    ========================================================================== */
@@ -159,69 +159,86 @@
     btn.setAttribute('aria-label', isMuted ? 'Turn sound on' : 'Turn sound off');
   }
 
-  /* 2 — Hero video ------------------------------------------------------------
-     Poster photo first (fast to paint), then a muted looping film fades in.
-     data-src (an original file) takes priority over data-youtube. Pauses when
-     scrolled out of view; reduced motion: nothing plays until asked. */
-  function initHeroVideo() {
-    var box = $('[data-hero-video]');
-    if (!box) return;
-    var holder = $('.hero-video-frame', box);
-    var playBtn = $('[data-hv-play]'), muteBtn = $('[data-hv-mute]');
-    var id = box.getAttribute('data-youtube'), file = box.getAttribute('data-src');
-    var frame = null, video = null, wantPlay = motion, muted = true, inView = true;
+  /* 2 — Hero slider -----------------------------------------------------------
+     Four photographs that cross-fade with a slow zoom. The timing lives in CSS:
+     the bar under the active number fills over data-hero-ms, and when it ends the
+     next photo comes in, so pausing the bar pauses the slider. It also pauses
+     while the hero is off screen. Reduced motion: no autoplay, arrows still work. */
+  function initHeroSlider() {
+    var root = $('[data-hero-slider]');
+    if (!root) return;
+    var stage = $('.hero-stage', root);
+    var slides = $$('.hero-slide', root), dots = $$('.hero-dot', root);
+    var playBtn = $('[data-hero-play]', root);
+    var n = slides.length, i = 0, wanted = 0;
+    if (n < 2) return;
+    root.style.setProperty('--hero-ms', (parseInt(root.getAttribute('data-hero-ms'), 10) || 6000) + 'ms');
+    root.classList.add('is-enhanced');
+    if (motion) root.classList.add('is-auto');
 
-    function build() {
-      if (frame || video || (!id && !file)) return;
-      if (file) {
-        video = document.createElement('video');
-        video.src = file; video.muted = true; video.loop = true; video.playsInline = true;
-        video.autoplay = wantPlay; video.preload = 'auto';
-        video.setAttribute('aria-hidden', 'true');
-        video.addEventListener('playing', function () { box.classList.add('is-playing'); setPlayButton(playBtn, true, 'video'); });
-        video.addEventListener('pause', function () { setPlayButton(playBtn, false, 'video'); });
-        holder.appendChild(video);
-        return;
-      }
-      frame = ytFrame(id, { autoplay: wantPlay, loop: true, title: 'Sachika Hotels, a short film' });
-      holder.appendChild(frame);
-      ytHandlers.set(frame.contentWindow, function (d) {
-        var st = ytState(d);
-        if (st === 1) {
-          /* YouTube flashes its own controls as playback starts; reveal just after */
-          setTimeout(function () { box.classList.add('is-playing'); }, 900);
-          setPlayButton(playBtn, true, 'video');
-          if (!muted) ytCommand(frame, 'unMute');
-          if (!wantPlay || !inView) ytCommand(frame, 'pauseVideo');
-        } else if (st === 2) setPlayButton(playBtn, false, 'video');
+    /* Never fade to an empty frame: wait until the photo is loaded and decoded.
+       A photo that fails to load is skipped. */
+    function show(k) {
+      k = (k + n) % n;
+      wanted = k;
+      if (k === i) return;
+      var img = $('img', slides[k]);
+      var go = function () { if (wanted === k && i !== k) swap(k); };
+      var skip = function () { if (wanted === k) show(k + 1); };
+      if (!img) { go(); return; }
+      img.loading = 'eager';
+      if (img.decode) img.decode().then(go, function () { if (img.naturalWidth > 0) go(); else skip(); });
+      else if (img.complete && img.naturalWidth > 0) go();
+      else { img.addEventListener('load', go, { once: true }); img.addEventListener('error', skip, { once: true }); }
+    }
+    function swap(k) {
+      slides[i].classList.remove('is-active'); slides[i].setAttribute('aria-hidden', 'true');
+      dots[i].classList.remove('is-active'); dots[i].removeAttribute('aria-current');
+      i = k;
+      slides[i].classList.add('is-active'); slides[i].removeAttribute('aria-hidden');
+      dots[i].classList.add('is-active'); dots[i].setAttribute('aria-current', 'true');
+    }
+
+    /* The active bar finished filling: move on */
+    root.addEventListener('animationend', function (e) {
+      if (e.animationName === 'hero-fill' && e.target.parentNode && e.target.parentNode.parentNode === dots[i]) show(i + 1);
+    });
+    dots.forEach(function (d, k) { d.addEventListener('click', function () { show(k); }); });
+    var prev = $('[data-hero-prev]', root), next = $('[data-hero-next]', root);
+    if (prev) prev.addEventListener('click', function () { show(i - 1); });
+    if (next) next.addEventListener('click', function () { show(i + 1); });
+    if (playBtn) {
+      setPlayButton(playBtn, motion, 'slideshow');
+      playBtn.addEventListener('click', function () {
+        var paused = root.classList.toggle('is-paused');
+        setPlayButton(playBtn, !paused, 'slideshow');
       });
     }
-    function play() {
-      wantPlay = true;
-      if (!frame && !video) { build(); return; }
-      if (video) video.play().catch(function () {}); else ytCommand(frame, 'playVideo');
-    }
-    function pause() { if (video) video.pause(); else ytCommand(frame, 'pauseVideo'); }
+    root.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowLeft') { show(i - 1); e.preventDefault(); }
+      else if (e.key === 'ArrowRight') { show(i + 1); e.preventDefault(); }
+    });
 
-    if (playBtn) playBtn.addEventListener('click', function () {
-      if (playBtn.classList.contains('is-paused')) { play(); track('video_play', { source: 'hero' }); }
-      else { wantPlay = false; pause(); setPlayButton(playBtn, false, 'video'); }
+    /* Swipe on touch screens */
+    var sx = null, sy = 0;
+    stage.addEventListener('pointerdown', function (e) { sx = e.clientX; sy = e.clientY; });
+    stage.addEventListener('pointercancel', function () { sx = null; });
+    stage.addEventListener('pointerup', function (e) {
+      if (sx === null) return;
+      var dx = e.clientX - sx, dy = e.clientY - sy;
+      sx = null;
+      if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy)) show(i + (dx < 0 ? 1 : -1));
     });
-    if (muteBtn) muteBtn.addEventListener('click', function () {
-      muted = !muted;
-      if (!frame && !video) { wantPlay = true; build(); }
-      if (video) video.muted = muted; else ytCommand(frame, muted ? 'mute' : 'unMute');
-      setMuteButton(muteBtn, muted);
-    });
+
+    /* Hold while scrolled away */
     new IntersectionObserver(function (entries) {
-      inView = entries[0].isIntersecting;
-      if (!frame && !video) return;
-      if (inView && wantPlay) play(); else if (!inView) pause();
-    }, { threshold: 0.15 }).observe(box);
+      root.classList.toggle('is-held', !entries[0].isIntersecting);
+    }, { threshold: 0.05 }).observe(root);
 
-    /* Start the player as soon as the page is ready; the poster covers the wait.
-       (YouTube embeds only work when the site is opened over http(s), not as a file.) */
-    if (motion && location.protocol !== 'file:') setTimeout(build, 150);
+    /* The first photo loads first; the rest follow once the page has settled */
+    function warm() { slides.forEach(function (s) { var img = $('img', s); if (img) img.loading = 'eager'; }); }
+    if (document.readyState === 'complete') setTimeout(warm, 400);
+    else window.addEventListener('load', function () { setTimeout(warm, 400); });
   }
 
   /* 3 — Reel player ------------------------------------------------------------
@@ -573,7 +590,7 @@
     setTimeout(go, 3500);
   }
 
-  function boot() { initWords(); initProgress(); initCounters(); initHeroVideo(); initReelPlayer(); initReviews(); }
+  function boot() { initWords(); initProgress(); initCounters(); initHeroSlider(); initReelPlayer(); initReviews(); }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();
 })();
